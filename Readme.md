@@ -1,132 +1,128 @@
-🚀 **Server Performance Stats Script**
+# 🚀 Server Performance Stats Script
 
-## 🔗 Project URL
+## 🔗 Project URL:
 
 https://github.com/nandkishor986/server-xray.git
 
-🚀 A lightweight DevOps project demonstrating real-world Linux monitoring using Bash scripting.
+🚀 A lightweight DevOps project demonstrating real-world Linux Monitoring using Bash Scripting.
 
-* A simple and lightweight Bash script to analyze basic server performance metrics on any Linux system.
+* A simple and lightweight Bash Script to analyze basic server performance metrics on any Linux system.
 
-* This project is designed to help DevOps engineers, system administrators, and learners quickly understand the health of a server without using heavy monitoring tools.
+* This project is designed to help DevOps Engineers, System Administrators, and Learners quickly understand server health without using heavy monitoring tools.
 
-📌 Features
+---
 
-✅ CPU usage calculation
+## 📌 Features
 
-✅ Memory usage (Total, Used, Free, Percentage)
+* ✅ CPU usage calculation
+* ✅ Memory usage (Total, Used, Free, Percentage)
+* ✅ Disk usage (Root partition)
+* ✅ Top 5 processes by CPU usage
+* ✅ Top 5 processes by Memory usage
+* ✅ OS version detection
+* ✅ System uptime and load average
+* ✅ Logged-in users
+* ✅ Failed login attempts (security insight)
+* ✅ Clean and colored output
 
-✅ Disk usage (Root partition)
+---
 
-✅ Top 5 processes by CPU usage
-
-✅ Top 5 processes by Memory usage
-
-✅ OS version detection
-
-✅ System uptime and load average
-
-✅ Logged-in users
-
-✅ Failed login attempts (security insight)
-
-✅ Clean and colored output
-
-
-🛠️ Tech Stack: 
+## 🛠️ Tech Stack
 
 * Bash Scripting
-* Linux System Commands (top, ps, df, free, uptime, awk, grep)
+* Linux Commands: `top`, `ps`, `df`, `free`, `uptime`, `awk`, `grep`
 
+---
 
 ## 📂 Project Structure
 
 ```
 .
 ├── server-stats.sh   # Main script
-└── README.md         # Project documentation
+└── README.md         # Documentation
 ```
 
+---
 
-⚙️ Installation & Usage: 
+## ⚙️ Installation & Usage
 
-1. Clone the repository: 
+### 1. Clone the repository
 
-```bash
+```
 git clone https://github.com/nandkishor986/server-xray.git
+cd server-xray
 ```
 
-```bash
-cd server-stats
+### 2. Make the script executable
+
+```
+chmod +x server-stats.sh
 ```
 
-2. Make the script executable: 
+### 3. Run the script
 
-```bash
-sudo chmod +x server-stats.sh
+```
+./server-stats.sh
 ```
 
-3. Run the script: 
+---
 
-```bash
-sudo ./server-stats.sh
+## 📊 Sample Output
+
 ```
-
-📊 Sample Output
-
 ===== SERVER PERFORMANCE STATS =====
 
-1. CPU Usage:
+CPU Usage:
+Used: 23.5%
 
-    Used: 23.5%
+Memory Usage:
+Total: 7972MB | Used: 4123MB | Free: 1200MB | Usage: 51.7%
 
-2. Memory Usage:
+Disk Usage:
+Total: 50G | Used: 20G | Free: 28G | Usage: 42%
 
-    Total: 7972MB | Used: 4123MB | Free: 1200MB | Usage: 51.7%
-
-3. Disk Usage:
-
-    Total: 50G | Used: 20G | Free: 28G | Usage: 42%
-
-4. Top 5 Processes by CPU:
-
-    PID   COMMAND   %CPU...
-
+Top 5 Processes by CPU:
+PID   COMMAND   %CPU
+...
+```
 
 ![server-stats](./Images/server-stats.png)
 
+---
 
-⚡ How It Works
+## ⚡ How It Works
 
-**This script uses standard Linux commands to fetch system data:**
+This script uses standard Linux commands:
 
-- top → CPU usage
-- free → Memory usage
-- df → Disk usage
-- ps → Process information
-- uptime → System load and uptime
-- who → Logged-in users
-- grep → Filter logs for failed login attempts
+* `top` → CPU usage
+* `free` → Memory usage
+* `df` → Disk usage
+* `ps` → Process details
+* `uptime` → Load average & uptime
+* `who` → Logged-in users
+* `grep` → Failed login attempts
 
-**The output is formatted using awk and printf for readability.**
+Output formatting is handled using `awk` and `printf`.
 
-🚀 Future Enhancements: 
+---
 
+## 🚀 Future Enhancements
 
-1. Add threshold-based alerts (CPU, Memory, Disk). 
+* Add threshold-based alerts (CPU, Memory, Disk)
+* Export output in JSON format
+* Integrate with Prometheus / Grafana
+* Send alerts to Slack or Email
+* Support multiple disk partitions
 
-2. Export output in JSON format. 
+---
 
-3. Integrate with monitoring tools (Prometheus / Grafana). 
-
-4. Send alerts to Slack or Email. 
-
-5. Add support for multiple disk partitions.
-
-
-🤝 Contributing
+## 🤝 Contributing
 
 Contributions are welcome!
-Feel free to fork this repo and improve the script.
+Feel free to fork this repository and submit a pull request.
 
-#devops | #bash | #linux | #monitoring
+---
+
+## 🏷️ Tags
+
+`devops` `bash` `linux` `monitoring`
