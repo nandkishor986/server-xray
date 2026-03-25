@@ -56,13 +56,13 @@ cd server-xray
 ### 2. Make the script executable
 
 ```
-chmod +x server-stats.sh
+sudo chmod +x server-stats.sh
 ```
 
 ### 3. Run the script
 
 ```
-./server-stats.sh
+sudo ./server-stats.sh
 ```
 
 ---
