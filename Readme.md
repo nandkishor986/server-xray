@@ -2,7 +2,7 @@
 
 ## 🔗 Project URL:
 
-https://github.com/nandkishor986/server-xray.git
+https://roadmap.sh/projects/server-stats
 
 🚀 A lightweight DevOps project demonstrating real-world Linux Monitoring using Bash Scripting.
 
