@@ -106,16 +106,6 @@ Output formatting is handled using `awk` and `printf`.
 
 ---
 
-## 🚀 Future Enhancements
-
-* Add threshold-based alerts (CPU, Memory, Disk)
-* Export output in JSON format
-* Integrate with Prometheus / Grafana
-* Send alerts to Slack or Email
-* Support multiple disk partitions
-
----
-
 ## 🤝 Contributing
 
 Contributions are welcome!
