@@ -1,165 +1,511 @@
 #!/bin/bash
 
-# This script is used to collect server stats and send them to a specified endpoint.
+# Server Health Report Script
+# All commands are READ-ONLY — safe to run on production servers.
+# Some sections (dmesg, auth logs) may require sudo for full output.
 
-# Colors: 
+# ── Color codes ──────────────────────────────────────────────────────────────
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+CYAN=$'\033[0;36m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
 
-# Define color codes using ANSI escape sequences
+SEP="──────────────────────────────────────────────────────"
 
-RED='\033[0;31m' # Red Color
-GREEN='\033[0;32m' # Green Color
-CYAN='\033[0;36m' # Cyan Color 
-NC='\033[0m' # Reset Color (No Color)
+section() { echo -e "\n${CYAN}${BOLD}$1${NC}\n${SEP}"; }
+ok()      { echo -e "  ${GREEN}✔${NC} $1"; }
+warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
+crit()    { echo -e "  ${RED}✘${NC} $1"; }
 
-echo -e "${CYAN}===== SERVER PERFORMANCE STATS =====${NC}" # '-e' enables interpretation of escape characters. 
+echo -e "${CYAN}${BOLD}"
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║      SERVER HEALTH REPORT            ║"
+echo "  ║  Generated: $(date '+%Y-%m-%d %H:%M:%S %Z')   ║"
+echo "  ╚══════════════════════════════════════╝"
+echo -e "${NC}"
 
-echo "------------------------------------------------------"
+# ── 1. OS & SYSTEM IDENTITY ──────────────────────────────────────────────────
+section "1. SYSTEM IDENTITY"
 
+HOSTNAME=$(hostname -f 2>/dev/null || hostname)
+KERNEL=$(uname -r)
+ARCH=$(uname -m)
+OS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 
-# CPU Usage: 
+echo "  Hostname   : ${BOLD}${HOSTNAME}${NC}"
+echo "  OS         : ${OS}"
+echo "  Kernel     : ${KERNEL}"
+echo "  Arch       : ${ARCH}"
 
-echo -e "${GREEN}CPU Usage:${NC}"
+# ── 2. UPTIME & LOAD AVERAGE ─────────────────────────────────────────────────
+section "2. UPTIME & LOAD AVERAGE"
 
-top -bn1 | grep "Cpu(s)" | awk '{print "Used: " $2 + $4 "%"}'
+UPTIME_STR=$(uptime -p 2>/dev/null || uptime)
+LOAD=$(cat /proc/loadavg)
+LOAD1=$(echo $LOAD | awk '{print $1}')
+LOAD5=$(echo $LOAD | awk '{print $2}')
+LOAD15=$(echo $LOAD | awk '{print $3}')
+CPU_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
 
-# top - shows real-time system processes
-# -b - batch mode (non-interactive, good for scripting)
-# -n1 - number of iterations (1 means it will run once and exit)
-# grep "Cpu(s)" - filters the output to show only the line containing CPU usage
-# awk '{print "Used: " $2 + $4 "%"}' - processes the CPU line to calculate total CPU usage by adding user and system percentages (fields $2 and $4 respectively) and formats the output to show the total CPU usage percentage.
+echo "  Uptime     : ${UPTIME_STR}"
+echo "  CPU Cores  : ${CPU_CORES}"
+echo "  Load Avg   : ${LOAD1} (1m)  ${LOAD5} (5m)  ${LOAD15} (15m)"
 
-echo "------------------------------------------------------"
+# Warn if load > number of cores
+LOAD1_INT=$(echo "$LOAD1" | cut -d. -f1)
+if [ "$LOAD1_INT" -ge "$CPU_CORES" ] 2>/dev/null; then
+    crit "1-min load (${LOAD1}) >= CPU cores (${CPU_CORES}) — system may be overloaded"
+elif (( $(echo "$LOAD1 > $CPU_CORES * 0.7" | bc -l 2>/dev/null || echo 0) )); then
+    warn "1-min load (${LOAD1}) is above 70% of CPU capacity"
+else
+    ok "Load average is within healthy range"
+fi
 
+# ── 3. CPU USAGE ─────────────────────────────────────────────────────────────
+section "3. CPU USAGE"
 
-# Memory Usage: 
+# Use /proc/stat for reliable cross-distro CPU metrics
+read CPU_LINE < /proc/stat
+CPU_VALS=($CPU_LINE)
+USER=${CPU_VALS[1]}; NICE=${CPU_VALS[2]}; SYS=${CPU_VALS[3]}
+IDLE=${CPU_VALS[4]}; IOWAIT=${CPU_VALS[5]}; STEAL=${CPU_VALS[8]:-0}
 
-echo -e "${GREEN}Memory Usage:${NC}" 
+TOTAL=$((USER + NICE + SYS + IDLE + IOWAIT + STEAL))
+IDLE_PCT=$(awk "BEGIN {printf \"%.1f\", ${IDLE}*100/${TOTAL}}")
+USED_PCT=$(awk "BEGIN {printf \"%.1f\", 100 - ${IDLE_PCT}}")
+IOWAIT_PCT=$(awk "BEGIN {printf \"%.1f\", ${IOWAIT}*100/${TOTAL}}")
+STEAL_PCT=$(awk "BEGIN {printf \"%.1f\", ${STEAL}*100/${TOTAL}}")
 
-free -m | awk 'NR==2 {printf "Total: %sMB | Used: %sMB | Free: %sMB | Usage: %.2f%%\n", $2, $3, $4, $3*100/$2 }'
+echo "  CPU Used   : ${BOLD}${USED_PCT}%${NC}"
+echo "  CPU Idle   : ${IDLE_PCT}%"
+echo "  I/O Wait   : ${IOWAIT_PCT}%   (high = disk bottleneck)"
+echo "  CPU Steal  : ${STEAL_PCT}%   (non-zero = VM host is throttling you)"
 
-echo "------------------------------------------------------"
+USED_INT=$(echo "$USED_PCT" | cut -d. -f1)
+IOWAIT_INT=$(echo "$IOWAIT_PCT" | cut -d. -f1)
+[ "$USED_INT" -ge 90 ] 2>/dev/null && crit "CPU usage critical: ${USED_PCT}%"
+[ "$USED_INT" -ge 75 ] && [ "$USED_INT" -lt 90 ] 2>/dev/null && warn "CPU usage elevated: ${USED_PCT}%"
+[ "$USED_INT" -lt 75 ] 2>/dev/null && ok "CPU usage normal: ${USED_PCT}%"
+[ "$IOWAIT_INT" -ge 20 ] 2>/dev/null && warn "High I/O wait (${IOWAIT_PCT}%) — possible disk bottleneck"
+[ "$(echo "$STEAL_PCT > 5" | bc -l 2>/dev/null)" = "1" ] && warn "CPU steal (${STEAL_PCT}%) is elevated — VM host may be oversubscribed"
 
-# free - displays the amount of free and used memory in the system.
-# -m - shows memory usage in megabytes.
+# ── 4. MEMORY USAGE ──────────────────────────────────────────────────────────
+section "4. MEMORY USAGE"
 
-# awk 'NR==2 { ... }' - processes the second line of the output (which contains the memory stats) and formats it to show total, used, free memory in MB, and calculates the percentage of memory used by dividing used memory ($3) by total memory ($2) and multiplying by 100 to get a percentage. The output is formatted to show the memory usage in a clear and concise manner.
+MEM_TOTAL=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+MEM_FREE=$(grep MemFree /proc/meminfo | awk '{print $2}')
+MEM_AVAIL=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
+MEM_BUFFERS=$(grep Buffers /proc/meminfo | awk '{print $2}')
+MEM_CACHED=$(grep "^Cached:" /proc/meminfo | awk '{print $2}')
+MEM_USED=$((MEM_TOTAL - MEM_AVAIL))
+MEM_PCT=$(awk "BEGIN {printf \"%.1f\", ${MEM_USED}*100/${MEM_TOTAL}}")
 
-# $2       -> total memory
-# $3       -> used memory
-# $4       -> free memory
-# $3*100/$2 -> calculates percentage usage
-# printf   -> formatted output (like C language)
+MEM_TOTAL_MB=$((MEM_TOTAL / 1024))
+MEM_USED_MB=$((MEM_USED / 1024))
+MEM_AVAIL_MB=$((MEM_AVAIL / 1024))
+MEM_BUFFERS_MB=$((MEM_BUFFERS / 1024))
+MEM_CACHED_MB=$((MEM_CACHED / 1024))
 
+echo "  Total      : ${MEM_TOTAL_MB} MB"
+echo "  Used       : ${BOLD}${MEM_USED_MB} MB (${MEM_PCT}%)${NC}"
+echo "  Available  : ${MEM_AVAIL_MB} MB   (free + reclaimable cache)"
+echo "  Buffers    : ${MEM_BUFFERS_MB} MB"
+echo "  Cached     : ${MEM_CACHED_MB} MB"
 
-# Disk Usage: 
+MEM_PCT_INT=$(echo "$MEM_PCT" | cut -d. -f1)
+[ "$MEM_PCT_INT" -ge 90 ] 2>/dev/null && crit "Memory usage critical: ${MEM_PCT}%"
+[ "$MEM_PCT_INT" -ge 75 ] && [ "$MEM_PCT_INT" -lt 90 ] 2>/dev/null && warn "Memory usage elevated: ${MEM_PCT}%"
+[ "$MEM_PCT_INT" -lt 75 ] 2>/dev/null && ok "Memory usage normal: ${MEM_PCT}%"
 
-echo -e "${GREEN}Disk Usage:${NC}"
+# ── 5. SWAP USAGE ────────────────────────────────────────────────────────────
+section "5. SWAP USAGE"
 
-df -h / | awk 'NR==2 {printf "Total: %s | Used: %s | Free: %s | Usage: %s\n", $2, $3, $4, $5 }'
+SWAP_TOTAL=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+SWAP_FREE=$(grep SwapFree /proc/meminfo | awk '{print $2}')
+SWAP_USED=$((SWAP_TOTAL - SWAP_FREE))
 
-echo "------------------------------------------------------"
+if [ "$SWAP_TOTAL" -eq 0 ] 2>/dev/null; then
+    warn "No swap configured — OOM killer will trigger under severe memory pressure"
+else
+    SWAP_TOTAL_MB=$((SWAP_TOTAL / 1024))
+    SWAP_USED_MB=$((SWAP_USED / 1024))
+    SWAP_FREE_MB=$((SWAP_FREE / 1024))
+    SWAP_PCT=$(awk "BEGIN {printf \"%.1f\", ${SWAP_USED}*100/${SWAP_TOTAL}}")
+    SWAP_PCT_INT=$(echo "$SWAP_PCT" | cut -d. -f1)
 
-# df       -> disk filesystem usage
-# -h       -> human-readable (KB, MB, GB)
-# /        -> checks root partition only
-# awk      -> processes output
-# NR==2    -> selects actual data row
-# $2       -> total disk
-# $3       -> used disk
-# $4       -> available disk
-# $5       -> usage percentage
+    echo "  Total      : ${SWAP_TOTAL_MB} MB"
+    echo "  Used       : ${BOLD}${SWAP_USED_MB} MB (${SWAP_PCT}%)${NC}"
+    echo "  Free       : ${SWAP_FREE_MB} MB"
 
-# Top 5 CPU Processes:
+    [ "$SWAP_PCT_INT" -ge 50 ] 2>/dev/null && crit "Swap usage high (${SWAP_PCT}%) — system is under memory pressure"
+    [ "$SWAP_PCT_INT" -gt 0 ] && [ "$SWAP_PCT_INT" -lt 50 ] 2>/dev/null && warn "Swap in use (${SWAP_PCT}%) — monitor memory closely"
+    [ "$SWAP_PCT_INT" -eq 0 ] 2>/dev/null && ok "Swap not in use — memory is healthy"
+fi
 
-echo -e "${GREEN}Top 5 CPU Processes:${NC}"
+# ── 6. DISK USAGE (ALL PARTITIONS) ───────────────────────────────────────────
+section "6. DISK USAGE (ALL PARTITIONS)"
 
-ps -eo pid,comm,%cpu --sort=-%cpu | head -n 6  
+printf "  %-20s %-8s %-8s %-8s %s\n" "Mount Point" "Total" "Used" "Free" "Usage"
+echo "  ${SEP:2:50}"
 
-echo "------------------------------------------------------"
+df -h --output=target,size,used,avail,pcent 2>/dev/null | tail -n +2 | grep -v "^/sys\|^/proc\|^/dev/loop\|^tmpfs\|^udev\|^devtmpfs\|^none" | while read -r TARGET SIZE USED AVAIL PCENT; do
+    PCT_INT=${PCENT//%/}
+    printf "  %-20s %-8s %-8s %-8s %s\n" "$TARGET" "$SIZE" "$USED" "$AVAIL" "$PCENT"
+    if [ "$PCT_INT" -ge 90 ] 2>/dev/null; then
+        echo -e "    ${RED}✘ CRITICAL: ${TARGET} is ${PCENT} full!${NC}"
+    elif [ "$PCT_INT" -ge 75 ] 2>/dev/null; then
+        echo -e "    ${YELLOW}⚠  WARNING: ${TARGET} is ${PCENT} full${NC}"
+    fi
+done
 
-# ps       -> process status
-# -e       -> select all processes  
-# -o       -> format output (pid, command, cpu usage)
-# pid      -> process ID
-# comm     -> command name
-# %cpu     -> CPU usage percentage
-# --sort=-%cpu -> sort by CPU usage in descending order 
-# head -n 6 -> show top 5 processes (including header) (1 line header + 5 processes)
+# Inode usage
+echo ""
+echo "  Inode Usage (exhausted inodes = can't create files even with free space):"
+printf "  %-20s %-10s %-10s %s\n" "Mount Point" "IUsed%" "IFree" "Total Inodes"
+df -i --output=target,ipcent,ifree,itotal 2>/dev/null | tail -n +2 | grep -v "^/sys\|^/proc\|^/dev/loop\|^tmpfs\|^udev\|^devtmpfs\|^none" | while read -r TARGET IPCENT IFREE ITOTAL; do
+    IPCT_INT=${IPCENT//%/}
+    printf "  %-20s %-10s %-10s %s\n" "$TARGET" "$IPCENT" "$IFREE" "$ITOTAL"
+    [ "$IPCT_INT" -ge 90 ] 2>/dev/null && echo -e "    ${RED}✘ CRITICAL: Inodes on ${TARGET} nearly exhausted!${NC}"
+done
 
+# ── 7. TOP PROCESSES BY CPU ──────────────────────────────────────────────────
+section "7. TOP 10 PROCESSES BY CPU"
 
-# Top 5 Memory Processes:
+printf "  %-8s %-25s %-8s %-8s %s\n" "PID" "Command" "CPU%" "MEM%" "User"
+echo "  ${SEP:2:55}"
+ps -eo pid,comm,%cpu,%mem,user --sort=-%cpu 2>/dev/null | head -n 11 | tail -n +2 | \
+    awk '{printf "  %-8s %-25s %-8s %-8s %s\n", $1, $2, $3, $4, $5}'
 
-echo -e "${GREEN}Top 5 Memory Processes:${NC}"
+# ── 8. TOP PROCESSES BY MEMORY ───────────────────────────────────────────────
+section "8. TOP 10 PROCESSES BY MEMORY"
 
-ps -eo pid,comm,%mem --sort=-%mem | head -n 6 
+printf "  %-8s %-25s %-8s %-8s %s\n" "PID" "Command" "MEM%" "RSS(KB)" "User"
+echo "  ${SEP:2:55}"
+ps -eo pid,comm,%mem,rss,user --sort=-%mem 2>/dev/null | head -n 11 | tail -n +2 | \
+    awk '{printf "  %-8s %-25s %-8s %-8s %s\n", $1, $2, $3, $4, $5}'
 
-echo "------------------------------------------------------"
+# ── 9. ZOMBIE PROCESSES ──────────────────────────────────────────────────────
+section "9. ZOMBIE PROCESSES"
 
-# ps       -> process status
-# -e       -> select all processes
-# -o       -> format output (pid, command, memory usage)
-# pid      -> process ID
-# comm     -> command name
-# %mem     -> memory usage percentage
-# --sort=-%mem -> sort by memory usage in descending order
-# head -n 6 -> show top 5 processes (including header) (1 line header + 5 processes)
+ZOMBIES=$(ps aux 2>/dev/null | awk '$8 == "Z"' | wc -l)
+if [ "$ZOMBIES" -eq 0 ] 2>/dev/null; then
+    ok "No zombie processes found"
+else
+    crit "${ZOMBIES} zombie process(es) detected:"
+    ps aux 2>/dev/null | awk 'NR==1 || $8 == "Z"' | head -6
+fi
 
+# ── 10. NETWORK I/O STATS ────────────────────────────────────────────────────
+section "10. NETWORK INTERFACES & I/O"
 
-# OS Info: 
+# Show active non-loopback interfaces
+for IFACE in $(ls /sys/class/net/ 2>/dev/null | grep -v lo); do
+    STATE=$(cat /sys/class/net/${IFACE}/operstate 2>/dev/null)
+    RX_BYTES=$(cat /sys/class/net/${IFACE}/statistics/rx_bytes 2>/dev/null || echo 0)
+    TX_BYTES=$(cat /sys/class/net/${IFACE}/statistics/tx_bytes 2>/dev/null || echo 0)
+    RX_ERRORS=$(cat /sys/class/net/${IFACE}/statistics/rx_errors 2>/dev/null || echo 0)
+    TX_ERRORS=$(cat /sys/class/net/${IFACE}/statistics/tx_errors 2>/dev/null || echo 0)
+    RX_DROP=$(cat /sys/class/net/${IFACE}/statistics/rx_dropped 2>/dev/null || echo 0)
 
-echo -e "${GREEN}OS Version:${NC}"
+    RX_MB=$(awk "BEGIN {printf \"%.1f\", ${RX_BYTES}/1048576}")
+    TX_MB=$(awk "BEGIN {printf \"%.1f\", ${TX_BYTES}/1048576}")
 
-grep PRETTY_NAME /etc/os-release | cut -d= -f2
+    echo "  Interface  : ${BOLD}${IFACE}${NC} [${STATE}]"
+    echo "    RX: ${RX_MB} MB   TX: ${TX_MB} MB"
+    echo "    Errors — RX: ${RX_ERRORS}  TX: ${TX_ERRORS}  Dropped: ${RX_DROP}"
+    [ "$RX_ERRORS" -gt 0 ] || [ "$TX_ERRORS" -gt 0 ] 2>/dev/null && warn "Network errors detected on ${IFACE}"
+    echo ""
+done
 
-echo "------------------------------------------------------"  
+# Active TCP connections count
+TCP_ESTABLISHED=$(ss -s 2>/dev/null | grep "TCP:" | awk '{print $4}' | tr -d ',')
+[ -n "$TCP_ESTABLISHED" ] && echo "  Active TCP connections: ${TCP_ESTABLISHED}"
 
-# grep PRETTY_NAME /etc/os-release -> searches for the line containing "PRETTY_NAME" in the /etc/os-release file, which typically contains a human-readable name of the operating system.
+# ── 11. OOM KILLER EVENTS ────────────────────────────────────────────────────
+section "11. OOM KILLER EVENTS (Last 30 days)"
 
-# cut -d= -f2 -> cuts the line using '=' as a delimiter and selects the second field (the value of PRETTY_NAME), which is the actual OS version information. This will output the OS version in a readable format.
+echo "  Checking kernel ring buffer for OOM kills..."
+OOM_EVENTS=$(dmesg --time-format=reltime 2>/dev/null | grep -i "out of memory\|oom.kill\|killed process" | tail -20)
 
+if [ -z "$OOM_EVENTS" ]; then
+    # Fallback: check kernel log files
+    OOM_EVENTS=$(grep -i "out of memory\|oom.kill\|killed process" /var/log/kern.log /var/log/messages 2>/dev/null | tail -20)
+fi
 
-# Uptime & Load: 
+if [ -z "$OOM_EVENTS" ]; then
+    ok "No OOM killer events found in kernel logs"
+else
+    crit "OOM killer events detected — processes were forcibly killed due to memory exhaustion:"
+    echo "$OOM_EVENTS" | while IFS= read -r line; do
+        echo "  ${RED}|${NC} $line"
+    done
+fi
 
-echo -e "${GREEN}Uptime & Load Average:${NC}"
+# ── 12. KERNEL ERRORS & WARNINGS ─────────────────────────────────────────────
+section "12. RECENT KERNEL ERRORS & WARNINGS"
 
-uptime 
+echo "  Checking dmesg for errors/warnings (last 50 entries)..."
+KERN_ERRORS=$(dmesg -l err,crit,alert,emerg 2>/dev/null | tail -15)
 
-echo "------------------------------------------------------"
+if [ -z "$KERN_ERRORS" ]; then
+    ok "No recent kernel errors found"
+else
+    warn "Kernel errors detected:"
+    echo "$KERN_ERRORS" | while IFS= read -r line; do
+        echo "  ${YELLOW}|${NC} $line"
+    done
+fi
 
-# uptime -> shows how long the system has been running and the load average (the average number of processes waiting to run) over the last 1, 5, and 15 minutes. This provides insight into the system's performance and workload over time.
+# ── 13. MEMORY PRESSURE EVENTS (vmstat) ──────────────────────────────────────
+section "13. MEMORY PRESSURE INDICATORS"
 
+VMSTAT=$(vmstat 1 3 2>/dev/null | tail -1)
+if [ -n "$VMSTAT" ]; then
+    SI=$(echo $VMSTAT | awk '{print $7}')   # swap-in rate
+    SO=$(echo $VMSTAT | awk '{print $8}')   # swap-out rate
+    BI=$(echo $VMSTAT | awk '{print $9}')   # block-in (disk reads)
+    BO=$(echo $VMSTAT | awk '{print $10}')  # block-out (disk writes)
+    WA=$(echo $VMSTAT | awk '{print $16}')  # iowait %
 
-# Logged in Users: 
+    echo "  Swap-in rate  : ${SI} KB/s  (non-zero = paging from disk)"
+    echo "  Swap-out rate : ${SO} KB/s  (non-zero = memory pressure)"
+    echo "  Disk reads    : ${BI} blocks/s"
+    echo "  Disk writes   : ${BO} blocks/s"
+    echo "  I/O wait      : ${WA}%"
 
-echo -e "${GREEN}Logged in Users:${NC}"
+    [ "$SI" -gt 0 ] 2>/dev/null && warn "Active swap-in detected — system is reading from swap (memory too low)"
+    [ "$SO" -gt 0 ] 2>/dev/null && warn "Active swap-out detected — system is writing to swap (memory pressure)"
+    [ "$SI" -eq 0 ] && [ "$SO" -eq 0 ] 2>/dev/null && ok "No active swapping — memory pressure is low"
+fi
 
-who 
+# ── 14. CPU TEMPERATURE (if available) ───────────────────────────────────────
+section "14. CPU TEMPERATURE"
 
-echo "------------------------------------------------------"
+if command -v sensors &>/dev/null; then
+    sensors 2>/dev/null | grep -E "Core|Package|temp" | while IFS= read -r line; do
+        echo "  $line"
+    done
+elif [ -d /sys/class/thermal ]; then
+    for ZONE in /sys/class/thermal/thermal_zone*/; do
+        TEMP_RAW=$(cat "${ZONE}temp" 2>/dev/null)
+        TYPE=$(cat "${ZONE}type" 2>/dev/null)
+        if [ -n "$TEMP_RAW" ]; then
+            TEMP_C=$(awk "BEGIN {printf \"%.1f\", ${TEMP_RAW}/1000}")
+            TEMP_INT=$(echo "$TEMP_C" | cut -d. -f1)
+            echo "  ${TYPE}: ${TEMP_C}°C"
+            [ "$TEMP_INT" -ge 85 ] 2>/dev/null && crit "High temperature on ${TYPE}: ${TEMP_C}°C"
+        fi
+    done
+else
+    echo "  Temperature sensors not available (install lm-sensors for CPU temps)"
+fi
 
-# who -> displays a list of users currently logged into the system, along with their login time and terminal information. This can help identify active sessions and user activity on the server.
+# ── 15. OPEN FILE DESCRIPTORS ────────────────────────────────────────────────
+section "15. OPEN FILE DESCRIPTORS"
 
+FD_MAX=$(cat /proc/sys/fs/file-max 2>/dev/null)
+FD_USED=$(cat /proc/sys/fs/file-nr 2>/dev/null | awk '{print $1}')
+if [ -n "$FD_MAX" ] && [ -n "$FD_USED" ]; then
+    FD_PCT=$(awk "BEGIN {printf \"%.1f\", ${FD_USED}*100/${FD_MAX}}")
+    echo "  Used : ${FD_USED}"
+    echo "  Max  : ${FD_MAX}"
+    echo "  Usage: ${FD_PCT}%"
+    FD_PCT_INT=$(echo "$FD_PCT" | cut -d. -f1)
+    [ "$FD_PCT_INT" -ge 80 ] 2>/dev/null && warn "File descriptor usage is high: ${FD_PCT}%"
+    [ "$FD_PCT_INT" -lt 80 ] 2>/dev/null && ok "File descriptor usage normal: ${FD_PCT}%"
+fi
 
-# Failed Login Attempts: 
+# Top 5 processes by open FDs
+echo ""
+echo "  Top 5 processes by open file descriptors:"
+ls /proc/*/fd 2>/dev/null | grep -oP '/proc/\d+' | sort | uniq -c | sort -rn | head -5 | while read COUNT PPATH; do
+    PID=$(echo $PPATH | grep -oP '\d+')
+    PNAME=$(cat /proc/${PID}/comm 2>/dev/null || echo "unknown")
+    echo "    PID ${PID} (${PNAME}): ${COUNT} FDs"
+done
 
-echo -e "${GREEN}Failed Login Attempts:${NC}"
+# ── 16. FAILED LOGIN ATTEMPTS ────────────────────────────────────────────────
+section "16. FAILED LOGIN ATTEMPTS (Last 10)"
 
 if [[ -f /var/log/auth.log ]]; then
-    grep "Failed password" /var/log/auth.log | tail -n 5 
+    COUNT=$(grep -c "Failed password" /var/log/auth.log 2>/dev/null || echo 0)
+    echo "  Total failed attempts in auth.log: ${COUNT}"
+    echo ""
+    grep "Failed password" /var/log/auth.log 2>/dev/null | tail -n 10 | while IFS= read -r line; do
+        echo "  ${RED}|${NC} $line"
+    done
 elif [[ -f /var/log/secure ]]; then
-    grep "Failed password" /var/log/secure | tail -n 5
-else 
-    echo -e "${RED}Log file not found.${NC}"
-fi 
+    COUNT=$(grep -c "Failed password" /var/log/secure 2>/dev/null || echo 0)
+    echo "  Total failed attempts in secure log: ${COUNT}"
+    echo ""
+    grep "Failed password" /var/log/secure 2>/dev/null | tail -n 10 | while IFS= read -r line; do
+        echo "  ${RED}|${NC} $line"
+    done
+else
+    echo -e "  ${YELLOW}Log file not found (may need sudo to access)${NC}"
+fi
 
-echo "------------------------------------------------------"
+# ── 17. DOCKER HEALTH ────────────────────────────────────────────────────────
+section "17. DOCKER HEALTH"
 
-# This section checks for failed login attempts by searching for "Failed password" in the appropriate log file (auth.log for Debian-based systems or secure for Red Hat-based systems). It then displays the last 5 failed login attempts. If neither log file is found, it outputs an error message in red.    
+if ! command -v docker &>/dev/null; then
+    echo "  Docker is not installed on this system"
+else
+    # Docker daemon status
+    if ! docker info &>/dev/null; then
+        crit "Docker daemon is not running or not accessible"
+    else
+        DOCKER_VER=$(docker version --format '{{.Server.Version}}' 2>/dev/null)
+        ok "Docker daemon is running  (v${DOCKER_VER})"
+        echo ""
 
-# This script provides a comprehensive overview of the server's performance and security status, making it easier for administrators to monitor and manage their systems effectively.
+        # ── Container summary ─────────────────────────────────────────────────
+        TOTAL_C=$(docker ps -aq 2>/dev/null | wc -l)
+        RUNNING_C=$(docker ps -q 2>/dev/null | wc -l)
+        STOPPED_C=$(docker ps -aq --filter status=exited 2>/dev/null | wc -l)
+        PAUSED_C=$(docker ps -aq --filter status=paused 2>/dev/null | wc -l)
+        RESTARTING_C=$(docker ps -aq --filter status=restarting 2>/dev/null | wc -l)
 
-# Note: Depending on the server's configuration and permissions, some commands may require elevated privileges (e.g., using sudo) to access certain information or log files. Always ensure you have the necessary permissions to run these commands safely.
+        echo "  Container Summary:"
+        echo "    Total      : ${TOTAL_C}"
+        echo "    Running    : ${GREEN}${RUNNING_C}${NC}"
+        [ "$STOPPED_C" -gt 0 ] 2>/dev/null && echo "    Exited     : ${YELLOW}${STOPPED_C}${NC}" || echo "    Exited     : ${STOPPED_C}"
+        [ "$PAUSED_C" -gt 0 ] 2>/dev/null && echo "    Paused     : ${YELLOW}${PAUSED_C}${NC}" || echo "    Paused     : ${PAUSED_C}"
+        [ "$RESTARTING_C" -gt 0 ] 2>/dev/null && echo "    Restarting : ${RED}${RESTARTING_C}${NC}" || echo "    Restarting : ${RESTARTING_C}"
+        echo ""
 
-# End of script
+        # ── Running containers with resource usage ────────────────────────────
+        if [ "$RUNNING_C" -gt 0 ]; then
+            echo "  Running Containers (live resource usage):"
+            printf "  %-30s %-12s %-10s %-12s %-12s %-10s\n" "Name" "Status" "CPU%" "MEM" "MEM%" "Restarts"
+            echo "  $(printf '─%.0s' {1..80})"
 
-echo -e "${CYAN}===== END OF REPORT =====${NC}"
+            # docker stats gives live snapshot; --no-stream takes one reading
+            # Join stats with inspect data for restart count
+            docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}' 2>/dev/null | \
+            while IFS='|' read -r NAME CPU MEM_USAGE MEM_PCT; do
+                RESTARTS=$(docker inspect --format '{{.RestartCount}}' "$NAME" 2>/dev/null || echo "?")
+                STATUS=$(docker inspect --format '{{.State.Status}}' "$NAME" 2>/dev/null || echo "?")
+                HEALTH=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$NAME" 2>/dev/null)
+
+                # Warn on high restart count
+                RESTART_DISPLAY="${RESTARTS}"
+                [ "$RESTARTS" -ge 5 ] 2>/dev/null && RESTART_DISPLAY="${RED}${RESTARTS}${NC}"
+                [ "$RESTARTS" -ge 1 ] && [ "$RESTARTS" -lt 5 ] 2>/dev/null && RESTART_DISPLAY="${YELLOW}${RESTARTS}${NC}"
+
+                printf "  %-30s %-12s %-10s %-12s %-12s %b\n" \
+                    "${NAME:0:29}" "$STATUS" "$CPU" "${MEM_USAGE%/*}" "$MEM_PCT" "$RESTART_DISPLAY"
+
+                # Health check status
+                if [ "$HEALTH" = "unhealthy" ]; then
+                    echo "    ${RED}✘ UNHEALTHY: ${NAME}${NC}"
+                elif [ "$HEALTH" = "starting" ]; then
+                    echo "    ${YELLOW}⚠  Health check starting: ${NAME}${NC}"
+                fi
+            done
+            echo ""
+        fi
+
+        # ── Crash-looping containers (restarted >= 5 times) ───────────────────
+        echo "  Containers with High Restart Counts (>=5):"
+        CRASH_FOUND=0
+        docker ps -a --format '{{.Names}}' 2>/dev/null | while read -r CNAME; do
+            RC=$(docker inspect --format '{{.RestartCount}}' "$CNAME" 2>/dev/null || echo 0)
+            if [ "$RC" -ge 5 ] 2>/dev/null; then
+                CRASH_FOUND=1
+                LAST_START=$(docker inspect --format '{{.State.StartedAt}}' "$CNAME" 2>/dev/null)
+                crit "${CNAME} has restarted ${RC} times  (last started: ${LAST_START})"
+            fi
+        done
+        [ "$CRASH_FOUND" -eq 0 ] 2>/dev/null && ok "No crash-looping containers"
+        echo ""
+
+        # ── Exited containers ─────────────────────────────────────────────────
+        if [ "$STOPPED_C" -gt 0 ]; then
+            echo "  Exited Containers:"
+            printf "  %-30s %-20s %s\n" "Name" "Exited At" "Exit Code"
+            echo "  $(printf '─%.0s' {1..60})"
+            docker ps -a --filter status=exited \
+                --format '{{.Names}}|{{.Status}}' 2>/dev/null | \
+            while IFS='|' read -r CNAME CSTATUS; do
+                EXIT_CODE=$(docker inspect --format '{{.State.ExitCode}}' "$CNAME" 2>/dev/null || echo "?")
+                FINISHED=$(docker inspect --format '{{.State.FinishedAt}}' "$CNAME" 2>/dev/null | cut -c1-19)
+                CODE_DISPLAY="$EXIT_CODE"
+                [ "$EXIT_CODE" != "0" ] && [ "$EXIT_CODE" != "?" ] 2>/dev/null && CODE_DISPLAY="${RED}${EXIT_CODE} (non-zero — abnormal exit)${NC}"
+                printf "  %-30s %-20s %b\n" "${CNAME:0:29}" "$FINISHED" "$CODE_DISPLAY"
+            done
+            echo ""
+        fi
+
+        # ── Docker disk usage ─────────────────────────────────────────────────
+        echo "  Docker Disk Usage:"
+        docker system df 2>/dev/null | while IFS= read -r line; do
+            echo "    $line"
+        done
+        echo ""
+
+        # ── Dangling images (untagged, wasted space) ──────────────────────────
+        DANGLING=$(docker images -f dangling=true -q 2>/dev/null | wc -l)
+        if [ "$DANGLING" -gt 0 ]; then
+            warn "${DANGLING} dangling image(s) taking up space — run: docker image prune"
+        else
+            ok "No dangling images"
+        fi
+
+        # ── Unused volumes ────────────────────────────────────────────────────
+        UNUSED_VOLS=$(docker volume ls -f dangling=true -q 2>/dev/null | wc -l)
+        if [ "$UNUSED_VOLS" -gt 0 ]; then
+            warn "${UNUSED_VOLS} unused volume(s) found — run: docker volume prune"
+        else
+            ok "No unused volumes"
+        fi
+
+        # ── Docker networks ───────────────────────────────────────────────────
+        echo ""
+        echo "  Docker Networks:"
+        printf "  %-25s %-12s %-15s %s\n" "Name" "Driver" "Scope" "Containers"
+        echo "  $(printf '─%.0s' {1..65})"
+        docker network ls --format '{{.Name}}|{{.Driver}}|{{.Scope}}' 2>/dev/null | \
+        while IFS='|' read -r NNAME NDRIVER NSCOPE; do
+            NCONTAINERS=$(docker network inspect "$NNAME" --format '{{len .Containers}}' 2>/dev/null || echo "?")
+            printf "  %-25s %-12s %-15s %s\n" "${NNAME:0:24}" "$NDRIVER" "$NSCOPE" "$NCONTAINERS"
+        done
+
+    fi
+fi
+
+# ── 18. ACTIVE SERVICES (systemd) ────────────────────────────────────────────
+section "19. FAILED SYSTEMD SERVICES"
+
+if command -v systemctl &>/dev/null; then
+    FAILED=$(systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null | grep "●\|failed" | wc -l)
+    if [ "$FAILED" -eq 0 ] 2>/dev/null; then
+        ok "No failed systemd services"
+    else
+        crit "${FAILED} failed service(s):"
+        systemctl list-units --state=failed --no-legend --no-pager 2>/dev/null | head -10
+    fi
+else
+    echo "  systemctl not available on this system"
+fi
+
+# ── 18. LOGGED-IN USERS ──────────────────────────────────────────────────────
+section "20. LOGGED-IN USERS"
+
+WHO_OUT=$(who 2>/dev/null)
+if [ -z "$WHO_OUT" ]; then
+    echo "  No users currently logged in"
+else
+    echo "$WHO_OUT"
+fi
+
+# ── SUMMARY ──────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}${BOLD}"
+echo "  ╔══════════════════════════════════════╗"
+echo "  ║           END OF REPORT              ║"
+echo "  ║  $(date '+%Y-%m-%d %H:%M:%S %Z')            ║"
+echo "  ╚══════════════════════════════════════╝"
+echo -e "${NC}"
